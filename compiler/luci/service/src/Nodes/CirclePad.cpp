@@ -33,9 +33,25 @@ namespace sinf
 
 loco::TensorShape Algorithm::visit(const luci::CirclePad *node)
 {
-  // TODO support non-const case
-  auto paddings = loco::must_cast<luci::CircleConst *>(node->paddings());
-  return use_paddings(node, paddings);
+  if (node->paddings()->arity() == 0)
+  {
+
+    auto paddings = loco::must_cast<luci::CircleConst *>(node->paddings());
+    return use_paddings(node, paddings);
+  }
+  else
+  {
+    auto paddings = loco::must_cast<luci::CircleNode *>(node->paddings());
+    LUCI_ASSERT(paddings->rank() == 2, "paddings should be [n, 2]");
+    loco::TensorShape output_shape;
+    auto input_shape = luci::shape_get(node->input()).template as<loco::TensorShape>();
+    output_shape.rank(input_shape.rank());
+    for (int32_t ni = 0; ni < input_shape.rank(); ++ni)
+    {
+      output_shape.dim(ni).unset();
+    }
+    return output_shape;
+  }
 }
 
 } // namespace sinf

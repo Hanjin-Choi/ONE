@@ -17,7 +17,12 @@
 #include "logo/RemoveDeadNodeWithQueryPass.h"
 
 #include "EmptyTestGraph.h"
-#include "logo/DeadNodeQueryService.h"
+#include "luci/IR/DeadNodeQueryService.h"
+#include "loco/IR/Dialect.h"
+
+#include <logo/DeadNodeQueryService.h>
+
+#include "loco/IR/CircleNodes.h"
 
 #include <gtest/gtest.h>
 
@@ -38,82 +43,243 @@ TEST(RemoveDeadNodeWithQueryPassTest, run_NEG)
   ASSERT_FALSE(pass.run(&g));
 }
 
-TEST(RemoveDeadNodeWithQueryPassTest, run_pos)
+TEST(RemoveDeadNodeWithQueryPassTest, run_pos_first_try)
 {
-  loco::Graph g;
-  logo::RemoveDeadNodeWithQueryPass pass;
+//                                       [input]
+//                                          |
+//                                       [push]
+//                  /                 |                  \              \             \ 
+//           [dead1]        [virtual_active1]     [virtual_active2]     [dead2]    [active3]
+//             it =0               it=1                  it=2             it=3       it=4
+//                                                                                    |
+//
+    loco::Graph g;
+    logo::RemoveDeadNodeWithQueryPass pass;
 
-  // 1. 입력 노드 생성
-  auto input_node = g.nodes()->create<loco::ConstGen>();
-  {
-    input_node->dtype(loco::DataType::FLOAT32);
-    input_node->rank(1);
-    input_node->dim(0) = 10;
-    input_node->size<loco::DataType::FLOAT32>(1);
-    input_node->at<loco::DataType::FLOAT32>(0) = 1.0f;
-  }
-
-  // 2. Push 노드 생성
-  auto push_node = g.nodes()->create<loco::Push>();
-  push_node->from(input_node);  // 입력 노드에서 Push 노드로 값 전달
-
-  // 3. Dead Node 1 생성 (Push 노드에서 값 전달, 이후 연결 없음)
-  auto dead_node1 = g.nodes()->create<loco::Push>();
-  dead_node1->from(push_node);  // Push 노드에서 Dead Node 1로 값 전달
-
-  // 4. Active Node 1 생성 (Push 노드에서 값 전달, 다음 노드로 연결)
-  auto active_node1 = g.nodes()->create<loco::Push>();
-  active_node1->from(push_node);  // Push 노드에서 Active Node 1로 값 전달
-
-  // 5. Active Node 2 생성 (Push 노드에서 값 전달, 다음 출력 노드로 연결)
-  auto active_node2 = g.nodes()->create<loco::Push>();
-  active_node2->from(push_node);  // Push 노드에서 Active Node 2로 값 전달
-
-  // 6. Dead Node 2 생성 (Push 노드에서 값 전달, 이후 연결 없음)
-  auto dead_node2 = g.nodes()->create<loco::Push>();
-  dead_node2->from(push_node);  // Push 노드에서 Dead Node 2로 값 전달
-
-  auto active_node3 = g.nodes()->create<loco::Push>();
-  active_node3->from(push_node);  // Push 노드의 값을 active_node3로 전달
-
-  // 7. Active Node 1과 Active Node 2 연결
-  active_node2->from(active_node1);  // Active Node 1에서 Active Node 2로 값 전달
-
-  // 8. 출력 노드 생성 및 Active Node 2 연결
-  auto output_node = g.outputs()->create();
-  {
-    output_node->name("output");
-    output_node->dtype(loco::DataType::FLOAT32);
-    loco::link(output_node, active_node3);  // Active Node 2에서 출력 노드로 값 전달
-  }
-  // 가상 노드 설정: dead_node2, active_node2는 가상 노드로 설정
-  if (auto dialect = active_node1->dialect())
-  {
-    dialect->service(std::make_unique<luci::DeadNodeQueryServiceImpl>());
-  }
-
-  if (auto dialect = active_node3->dialect())
-  {
-    dialect->service(std::make_unique<luci::DeadNodeQueryServiceImpl>());
-  }
-
-  auto active_nodes = loco::active_nodes(loco::output_nodes(&g));
-
-  // List dead(= non-active) nodes candidates
-  std::set<loco::Node *> candidates;
-
-  for (auto node : loco::all_nodes(&g))
-  {
-    if (active_nodes.find(node) == active_nodes.end())
+    auto input_node = g.nodes()->create<loco::ConstGen>();
     {
-      candidates.insert(node);
+        input_node->dtype(loco::DataType::FLOAT32);
+        input_node->rank(1);
+        input_node->dim(0) = 10;
+        input_node->size<loco::DataType::FLOAT32>(1);
+        input_node->at<loco::DataType::FLOAT32>(0) = 1.0f;
     }
-  }
-  pass.run(&g);
-  for (auto node : loco::all_nodes(&g))
-  {
-    ASSERT_EQ(candidates.find(node), candidates.end());
-  }
+
+    auto push_node = g.nodes()->create<loco::Push>();
+    push_node->from(input_node);
+
+    auto dead_node1 = g.nodes()->create<loco::Push>();
+    dead_node1->from(push_node);
+
+    auto active_node1 = g.nodes()->create<loco::Push>();
+    active_node1->from(push_node);
+
+    auto active_node2 = g.nodes()->create<loco::Push>();
+    active_node2->from(push_node);
+
+    auto dead_node2 = g.nodes()->create<loco::Push>();
+    dead_node2->from(push_node);
+
+    auto active_node3 = g.nodes()->create<loco::Push>();
+    active_node3->from(push_node);
+
+    auto output_node = g.outputs()->create();
+    {
+        output_node->name("output");
+        output_node->dtype(loco::DataType::FLOAT32);
+        loco::link(output_node, active_node3);
+    }
+
+    if (auto dialect = const_cast<loco::Dialect *>(active_node1->dialect()))
+    {
+        dialect->service(std::make_unique<luci::DeadNodeQueryServiceImpl>());
+    }
+
+    if (auto dialect = const_cast<loco::Dialect *>(active_node2->dialect()))
+    {
+        dialect->service(std::make_unique<luci::DeadNodeQueryServiceImpl>());
+    }
+
+    auto active_nodes = loco::active_nodes(loco::output_nodes(&g));
+
+    std::set<loco::Node *> candidates;
+    for (auto node : loco::all_nodes(&g))
+    {
+        if (active_nodes.find(node) == active_nodes.end())
+        {
+            candidates.insert(node);
+        }
+    }
+    pass.run(&g);
+    for (auto node : loco::all_nodes(&g))
+    {
+        ASSERT_EQ(candidates.find(node), candidates.end());
+    }
 }
 
+TEST(RemoveDeadNodeWithQueryPassTest, run_pos_with_CircleNode_second_try)
+{
+//                                 [input]
+//                               /            \
+//                      [split]              [dead]
+//           /             |         \
+//    [virtual1]  [active]   [virtual2]
+//                          |
+//                     [output]
+    loco::Graph g;
+    logo::RemoveDeadNodeWithQueryPass pass;
 
+    auto input_node = g.nodes()->create<luci::CircleConst>();
+    {
+        input_node->dtype(loco::DataType::FLOAT32);
+        input_node->rank(1);
+        input_node->dim(0) = 10;
+        input_node->size<loco::DataType::FLOAT32>(1);
+        input_node->at<loco::DataType::FLOAT32>(0) = 1.0f;
+    }
+    luci::CircleSplit split;
+    g.nodes()->at(0) = split;
+
+    auto split_node = g.nodes()->create<luci::CircleSplit>();
+
+    auto split_out_node_1 = g.nodes()->create<luci::CircleSplitOut>();
+    auto split_out_node_2 = g.nodes()->create<luci::CircleSplitOut>();
+    auto split_out_node_3 = g.nodes()->create<luci::CircleSplitOut>();
+    loco::Push *dummy;
+    split_node->num_split(3);
+    split_out_node_1->input(split_node);
+    split_out_node_1->index(0);
+    split_out_node_2->input(split_node);
+    split_out_node_2->index(1);
+    split_out_node_3->input(split_node);
+    split_out_node_3->index(2);
+    auto output_node = g.outputs()->create();
+    {
+        output_node->name("output");
+        output_node->dtype(loco::DataType::FLOAT32);
+        loco::link(output_node, dummy);
+    }
+    auto active_node2 = g.nodes()->create<loco::Push>();
+    active_node2->dialect()->service<logo::DeadNodeQueryService>(
+        std::make_unique<luci::DeadNodeQueryServiceImpl>());
+    auto active_nodes = loco::active_nodes(loco::output_nodes(&g));
+
+    std::set<loco::Node *> candidates;
+
+    for (auto node : loco::all_nodes(&g))
+    {
+        if (active_nodes.find(node) == active_nodes.end())
+        {
+            candidates.insert(node);
+        }
+    }
+    pass.run(&g);
+    for (auto node : loco::all_nodes(&g))
+    {
+        ASSERT_EQ(candidates.find(node), candidates.end());
+    }
+}
+
+class CustomDeadNodeQueryServiceImpl : public logo::DeadNodeQueryService
+{
+public:
+    bool isDeadNode(loco::Node *node) override
+    {
+        auto g = node->graph();
+        auto input_nodes_vec = loco::input_nodes(g);
+        auto output_nodes_vec = loco::output_nodes(g);
+
+        auto input_nodes = std::set<loco::Node *>(input_nodes_vec.begin(), input_nodes_vec.end());
+        auto output_nodes = std::set<loco::Node *>(output_nodes_vec.begin(), output_nodes_vec.end());
+        auto active_nodes = loco::active_nodes(output_nodes_vec);
+
+        if (active_nodes.find(node) != active_nodes.end())
+            return false;
+        if (input_nodes.find(node) != input_nodes.end())
+            return false;
+
+        return true;
+    }
+};
+
+class CustomDialect : public loco::Dialect
+{
+public:
+    template <typename ConcreteService>
+    void addService(std::unique_ptr<ConcreteService> &&service)
+    {
+        this->service(std::move(service));
+    }
+};
+
+TEST(RemoveDeadNodeWithQueryPassTest, run_pos_with_custom_dialect_Third_try)
+{
+    loco::Graph g;
+    logo::RemoveDeadNodeWithQueryPass pass;
+
+//                                       [input]
+//                                          |
+//                                       [push]
+//                  /                 |                  \              \             \ 
+//           [dead1]        [virtual_active1]     [virtual_active2]     [dead2]    [active3]
+//             it =0               it=1                  it=2             it=3       it=4
+//                                                                                    |
+//                                                                                 [output]
+    auto input_node = g.nodes()->create<loco::ConstGen>();
+    {
+        input_node->dtype(loco::DataType::FLOAT32);
+        input_node->rank(1);
+        input_node->dim(0) = 10;
+        input_node->size<loco::DataType::FLOAT32>(1);
+        input_node->at<loco::DataType::FLOAT32>(0) = 1.0f;
+    }
+
+    auto custom_dialect = std::make_unique<CustomDialect>();
+    custom_dialect->addService(std::make_unique<CustomDeadNodeQueryServiceImpl>());
+
+    auto push_node = g.nodes()->create<loco::Push>();
+    push_node->from(input_node);
+
+    auto dead_node1 = g.nodes()->create<loco::Push>();
+    dead_node1->from(push_node);
+
+    auto active_node1 = g.nodes()->create<loco::Push>();
+    active_node1->from(push_node);
+
+    auto active_node2 = g.nodes()->create<loco::Push>();
+    active_node2->from(push_node);
+
+    auto dead_node2 = g.nodes()->create<loco::Push>();
+    dead_node2->from(push_node);
+
+    auto active_node3 = g.nodes()->create<loco::Push>();
+    active_node3->from(push_node);
+
+    auto output_node = g.outputs()->create();
+    {
+        output_node->name("output");
+        output_node->dtype(loco::DataType::FLOAT32);
+        loco::link(output_node, active_node3);
+    }
+
+    auto active_nodes = loco::active_nodes(loco::output_nodes(&g));
+
+    std::set<loco::Node *> candidates;
+    for (auto node : loco::all_nodes(&g))
+    {
+        if (active_nodes.find(node) == active_nodes.end())
+        {
+            candidates.insert(node);
+        }
+    }
+
+    pass.run(&g);
+
+    for (auto node : loco::all_nodes(&g))
+    {
+        if (candidates.find(node) != candidates.end())
+        {
+            ASSERT_EQ(candidates.find(node), candidates.end());
+        }
+    }
+}
